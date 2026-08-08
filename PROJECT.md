@@ -2,6 +2,14 @@
 
 > Bas bol do. Baaki yaad rahega.
 
+## Current Implementation Status
+
+The text-first product through reminders, timeline context, persistent memory, documents,
+links, conversational preferences, and multilingual responses is implemented. It includes
+one-time and recurring reminders, rescheduling, provenance-aware context, structured
+document extraction, and conflict-aware alternative scheduling. Voice and optional provider
+code remain available but are validated separately from the text-first contract.
+
 ## Implementation Plan
 
 Bol Bachchan will replace the existing PBCTF bot functionality. The project will remain a single deployable Python application, while keeping WhatsApp, AI, persistence, and scheduling behind clear internal boundaries.
