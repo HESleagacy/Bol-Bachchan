@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from app.assistant.schemas import AssistantDecision, ProposedAction
@@ -383,7 +383,3 @@ class DecisionEngine:
             self._calendar.delete_event(event_id)
         except Exception:
             log.exception("Calendar deletion failed for event %s", event_id)
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
