@@ -26,15 +26,20 @@ class Settings(BaseSettings):
     pending_action_ttl_minutes: int = Field(default=30, ge=1)
     log_level: str = "INFO"
     reminder_poll_seconds: int = Field(default=10, ge=1)
+    whatsapp_reconnect_initial_seconds: int = Field(default=5, ge=1)
+    whatsapp_reconnect_max_seconds: int = Field(default=60, ge=1)
     media_dir: Path = Path("data/media")
     max_media_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
-    maya_api_url: str = ""
+    maya_api_url: str = "https://tts.mayaresearch.ai/v1/tts"
     maya_api_key: SecretStr = SecretStr("")
-    maya_voice: str = "default"
+    maya_voice: str = "Ananya"
+    maya_model: str = "Maya 2 Native"
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
     google_refresh_token: SecretStr = SecretStr("")
     google_calendar_id: str = "primary"
+    google_token_path: Path = Path("data/google_calendar_token.json")
+    google_oauth_redirect_port: int = Field(default=8765, ge=1024, le=65535)
 
     @field_validator("owner_jid")
     @classmethod
