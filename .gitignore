@@ -13,8 +13,9 @@ data/*
 !data/.gitkeep
 neonize.db
 
-# Environment - never commit secrets
+# Environment and deployment secrets - NEVER commit
 .env
+PROD.md
 
 # IDE and tooling
 .pytest_cache/
