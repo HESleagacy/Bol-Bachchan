@@ -36,6 +36,7 @@ class Message(Base):
     text: Mapped[str | None] = mapped_column(Text)
     transcript: Mapped[str | None] = mapped_column(Text)
     media_path: Mapped[str | None] = mapped_column(Text)
+    detected_languages: Mapped[list[str]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -65,6 +66,10 @@ class Reminder(Base):
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recurrence_frequency: Mapped[str | None] = mapped_column(String(20))
+    recurrence_interval: Mapped[int] = mapped_column(default=1)
+    category: Mapped[str | None] = mapped_column(String(100))
+    calendar_event_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -77,6 +82,8 @@ class TimelineEvent(Base):
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"))
+    category: Mapped[str | None] = mapped_column(String(100))
+    calendar_event_id: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(30), default="active")
 
 
@@ -114,5 +121,9 @@ class Document(Base):
     storage_path: Mapped[str] = mapped_column(Text)
     summary: Mapped[str | None] = mapped_column(Text)
     extracted_text: Mapped[str | None] = mapped_column(Text)
+    document_type: Mapped[str | None] = mapped_column(String(100))
+    extracted_dates: Mapped[list[str]] = mapped_column(JSON, default=list)
+    extracted_amounts: Mapped[list[str]] = mapped_column(JSON, default=list)
+    extracted_entities: Mapped[list[str]] = mapped_column(JSON, default=list)
     source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -79,6 +79,17 @@ class Repository:
             return None
         return message
 
+    def list_recent_messages(self, user_id: int, limit: int = 8) -> list[Message]:
+        rows = list(
+            self.session.scalars(
+                select(Message)
+                .where(Message.user_id == user_id)
+                .order_by(Message.id.desc())
+                .limit(limit)
+            )
+        )
+        return list(reversed(rows))
+
     def list_memories(self, user_id: int, limit: int = 30) -> list[Memory]:
         return list(
             self.session.scalars(
@@ -197,6 +208,9 @@ class Repository:
         title: str,
         due_at: datetime,
         timezone_name: str,
+        recurrence_frequency: str | None = None,
+        recurrence_interval: int = 1,
+        category: str | None = None,
     ) -> Reminder:
         reminder = Reminder(
             user_id=user_id,
@@ -204,6 +218,9 @@ class Repository:
             title=title,
             due_at=due_at,
             timezone=timezone_name,
+            recurrence_frequency=recurrence_frequency,
+            recurrence_interval=recurrence_interval,
+            category=category,
         )
         self.session.add(reminder)
         self.session.flush()
@@ -219,6 +236,15 @@ class Repository:
         if reminder is None or reminder.status != "pending":
             return False
         reminder.status = "cancelled"
+        self.session.flush()
+        return True
+
+    def reschedule_reminder(self, user_id: int, reminder_id: int, due_at: datetime) -> bool:
+        reminder = self.get_reminder(user_id, reminder_id)
+        if reminder is None or reminder.status != "pending":
+            return False
+        reminder.due_at = due_at
+        reminder.delivered_at = None
         self.session.flush()
         return True
 
@@ -239,6 +265,7 @@ class Repository:
         title: str,
         starts_at: datetime,
         ends_at: datetime,
+        category: str | None = None,
     ) -> TimelineEvent:
         event = TimelineEvent(
             user_id=user_id,
@@ -246,6 +273,7 @@ class Repository:
             title=title,
             starts_at=starts_at,
             ends_at=ends_at,
+            category=category,
         )
         self.session.add(event)
         self.session.flush()
@@ -270,6 +298,10 @@ class Repository:
         storage_path: str,
         summary: str | None,
         extracted_text: str | None,
+        document_type: str | None = None,
+        extracted_dates: list[str] | None = None,
+        extracted_amounts: list[str] | None = None,
+        extracted_entities: list[str] | None = None,
     ) -> Document:
         document = Document(
             user_id=user_id,
@@ -279,6 +311,10 @@ class Repository:
             storage_path=storage_path,
             summary=summary,
             extracted_text=extracted_text,
+            document_type=document_type,
+            extracted_dates=extracted_dates or [],
+            extracted_amounts=extracted_amounts or [],
+            extracted_entities=extracted_entities or [],
         )
         self.session.add(document)
         self.session.flush()
