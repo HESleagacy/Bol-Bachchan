@@ -113,9 +113,3 @@ WhatsApp-compatible OGG/Opus, and falls back to text on provider failure.
 - User-reported memories retain provenance and are not presented as independently verified.
 - Reminder state lives in SQLite rather than in-memory timers.
 
-## Current Limits
-
-- Designed for one owner and one running SQLite instance
-- Google Calendar and Maya require external credentials; both must be configured for full V1 acceptance
-- Links support public HTTP(S) text and HTML pages only
-- Production hardening items remain tracked in `DEMO_CHECKLIST.md`
