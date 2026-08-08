@@ -1,0 +1,50 @@
+# fly.toml  –  Fly.io deployment configuration for Bol Bachchan
+# Docs: https://fly.io/docs/reference/configuration/
+#
+# Quick-start:
+#   fly launch            (creates the app + volume on first run)
+#   fly secrets set GEMINI_API_KEY=... OWNER_JID=...
+#   fly deploy
+#
+app = "bol-bachchan"
+primary_region = "bom"          # Mumbai – lowest latency for India
+
+[build]
+  # Uses the repo Dockerfile by default.
+
+# Non-secret environment defaults (secrets go via `fly secrets set`).
+[env]
+  LOG_LEVEL           = "INFO"
+  DATABASE_URL        = "sqlite:///data/bol_bachchan.db"
+  NEONIZE_SESSION_PATH = "data/neonize.db"
+  OWNER_TIMEZONE      = "Asia/Kolkata"
+  GEMINI_MODEL        = "gemini-2.5-flash"
+  MEDIA_DIR           = "data/media"
+  PORT                = "8080"
+
+# Persistent volume for SQLite DB, Neonize session, and media files.
+# Create with:  fly volumes create bol_data --region bom --size 1
+[[mounts]]
+  source      = "bol_data"
+  destination = "/app/data"
+
+# Internal HTTP service – only used for Fly's health checks.
+# Not exposed to the public internet.
+[[services]]
+  internal_port = 8080
+  protocol      = "tcp"
+  auto_stop_machines  = false    # keep the bot always running
+  auto_start_machines = true
+  min_machines_running = 1       # never scale to zero
+
+  [[services.http_checks]]
+    interval    = 30000          # 30 s
+    timeout     = 5000           # 5 s
+    grace_period = "30s"
+    method      = "GET"
+    path        = "/health"
+
+# Machine sizing – smallest available (fits in free allowance).
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
