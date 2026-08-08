@@ -6,6 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Intent = Literal[
     "create_reminder",
+    "cancel_reminder",
+    "reschedule_reminder",
+    "create_timeline_event",
+    "forget_memory",
     "store_memory",
     "update_preference",
     "answer_question",
@@ -19,6 +23,7 @@ ActionType = Literal[
     "update_preference",
     "create_timeline_event",
     "cancel_reminder",
+    "reschedule_reminder",
     "forget_memory",
 ]
 
@@ -54,6 +59,9 @@ class ProposedAction(BaseModel):
         default=None,
         description="Existing memory id for forget_memory",
     )
+    recurrence_frequency: Literal["daily", "weekly", "monthly"] | None = None
+    recurrence_interval: int = Field(default=1, ge=1, le=365)
+    event_category: str | None = None
 
 
 class AssistantDecision(BaseModel):
@@ -74,4 +82,19 @@ class AssistantDecision(BaseModel):
     document_extracted_text: str | None = Field(
         default=None,
         description="Extracted text or OCR content when the input is a document or image",
+    )
+    document_type: str | None = None
+    document_dates: list[str] = Field(default_factory=list)
+    document_amounts: list[str] = Field(default_factory=list)
+    document_entities: list[str] = Field(default_factory=list)
+
+
+class AudioDecision(AssistantDecision):
+    transcript: str = Field(
+        min_length=1,
+        description="Verbatim transcript of the complete voice note",
+    )
+    detected_languages: list[str] = Field(
+        min_length=1,
+        description="BCP-47 language codes detected in the voice note, including mixed languages",
     )
