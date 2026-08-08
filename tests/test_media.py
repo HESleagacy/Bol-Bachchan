@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.assistant.decision_engine import DecisionEngine
-from app.assistant.schemas import AssistantDecision, ProposedAction
+from app.assistant.schemas import AssistantDecision, AudioDecision, ProposedAction
 from app.assistant.service import AssistantService
 from app.domain.messages import InboundMessage, MessageType, OutboundMessage
 from app.persistence.database import Database
@@ -23,6 +23,8 @@ class FakeMediaProvider:
         self.decision = decision
         self.audio_calls: list[tuple[bytes, str]] = []
         self.document_calls: list[tuple[str, str, str | None]] = []
+        self.localization_calls: list[tuple[str, str]] = []
+        self.localized_response: str | None = None
 
     def interpret(self, _message: str, _context: str) -> AssistantDecision:
         raise AssertionError("text path should not be used")
@@ -30,6 +32,10 @@ class FakeMediaProvider:
     def interpret_audio(self, audio: bytes, mime_type: str, _context: str) -> AssistantDecision:
         self.audio_calls.append((audio, mime_type))
         return self.decision
+
+    def localize_response(self, response: str, language: str) -> str:
+        self.localization_calls.append((response, language))
+        return self.localized_response or response
 
     def interpret_document(
         self, _data: bytes, mime_type: str, filename: str, caption: str | None, _context: str
@@ -146,24 +152,27 @@ def test_voice_note_is_transcribed_and_stored_with_provenance(tmp_path: Path) ->
 
 
 def test_voice_note_gets_a_voice_reply_without_a_saved_preference(tmp_path: Path) -> None:
-    decision = AssistantDecision(
+    decision = AudioDecision(
         intent="answer_question",
-        response="Sun raha hoon.",
-        transcript="Dudu",
+        response="Ho, mi aiktoy, okay.",
+        transcript="Tu aiktoy ka? Yes?",
+        detected_languages=["mr", "en"],
     )
     provider = FakeMediaProvider(decision)
+    provider.localized_response = "हो, मी ऐकतोय."
     transport = FakeTransport()
 
     class FakeTTS:
         def synthesize(self, text: str, language: str | None = None) -> bytes:
-            assert text == "Sun raha hoon."
-            assert language is None
+            assert text == "हो, मी ऐकतोय."
+            assert language == "mr"
             return b"ogg-opus"
 
     worker, _database = make_worker(tmp_path, provider, transport, tts=FakeTTS())
 
     worker.process(media_inbound(MessageType.AUDIO, "audio/ogg; codecs=opus"))
 
+    assert provider.localization_calls == [("Ho, mi aiktoy, okay.", "mr")]
     assert transport.voice_audio == [b"ogg-opus"]
     assert transport.sent[-1].text == "[voice note]"
 

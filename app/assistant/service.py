@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -12,6 +13,9 @@ from app.domain.reminders import parse_natural_interval, parse_natural_schedule
 from app.persistence.models import Message, User
 from app.persistence.repositories import Repository
 from app.providers.gemini import DecisionProvider
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,16 @@ class AssistantService:
         context = build_context(repository, user, pending)
         decision = self._provider.interpret_audio(audio, mime_type, context.as_prompt())
         execution = self._decision_engine.execute(decision, repository, user, source_message, pending)
+        detected_languages = getattr(decision, "detected_languages", [])
+        if detected_languages:
+            try:
+                response = self._provider.localize_response(
+                    execution.response,
+                    detected_languages[0],
+                )
+                execution = ExecutionResult(response, execution.executed_actions)
+            except Exception:
+                log.exception("Audio response localization failed; using the original response")
         return self._media_result(execution, decision)
 
     def handle_document(

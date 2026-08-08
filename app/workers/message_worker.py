@@ -112,6 +112,11 @@ class MessageWorker:
                 inbound.chat_jid,
                 response_text,
                 prefer_voice=inbound.message_type == MessageType.AUDIO,
+                detected_languages=(
+                    source_message.detected_languages
+                    if inbound.message_type == MessageType.AUDIO
+                    else None
+                ),
             )
             return True
 
@@ -237,11 +242,15 @@ class MessageWorker:
         chat_jid: str,
         text: str,
         prefer_voice: bool = False,
+        detected_languages: list[str] | None = None,
     ) -> None:
         formatted = format_assistant_response(text)
         preferences = repository.get_preferences(user.id)
         if (prefer_voice or preferences.get("response_modality") == "voice") and self._tts is not None:
-            audio = self._tts.synthesize(text, preferences.get("preferred_language"))
+            language = preferences.get("preferred_language")
+            if detected_languages:
+                language = detected_languages[0]
+            audio = self._tts.synthesize(text, language)
             if audio is not None:
                 try:
                     outbound = self._transport.send_voice_note(chat_jid, audio)

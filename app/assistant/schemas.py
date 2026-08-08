@@ -98,3 +98,7 @@ class AudioDecision(AssistantDecision):
         min_length=1,
         description="BCP-47 language codes detected in the voice note, including mixed languages",
     )
+
+
+class LocalizedResponse(BaseModel):
+    response: str = Field(min_length=1)
