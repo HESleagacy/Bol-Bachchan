@@ -43,6 +43,8 @@ def _unwrap_message(message: Any) -> Any:
         "viewOnceMessageV2",
         "documentWithCaptionMessage",
         "groupMentionedMessage",
+        "deviceSentMessage",
+        "editedMessage",
     )
     for _ in range(5):
         wrapper = next(
