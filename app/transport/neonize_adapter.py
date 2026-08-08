@@ -72,7 +72,9 @@ class NeonizeAdapter:
         return self._to_outbound(response, chat_jid, text)
 
     def send_voice_note(self, chat_jid: str, audio: bytes) -> OutboundMessage:
-        response = self._client.send_audio(self._build_jid(chat_jid), audio, ptt=True)
+        message = self._client.build_audio_message(audio, ptt=True)
+        message.audioMessage.mimetype = "audio/ogg; codecs=opus"
+        response = self._client.send_message(self._build_jid(chat_jid), message)
         return self._to_outbound(response, chat_jid, "[voice note]")
 
     def download_media(self, whatsapp_message_id: str) -> bytes | None:
