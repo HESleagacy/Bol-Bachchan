@@ -13,6 +13,8 @@ def jid_to_string(value: Any) -> str:
     server = getattr(value, "Server", None)
     if user and server:
         result = f"{user}@{server}"
+    elif hasattr(value, "User") and hasattr(value, "Server"):
+        return ""
     else:
         result = str(value)
     result = result.strip().lower()
@@ -69,9 +71,19 @@ def normalize_neonize_message(event: Any, owner_jid: str) -> InboundMessage | No
     sender_jid = jid_to_string(getattr(source, "Sender", None)) or chat_jid
     owner_jid = jid_to_string(owner_jid)
     is_from_me = bool(getattr(source, "IsFromMe", False))
-    is_self_chat = chat_jid == owner_jid
-    if not is_self_chat or sender_jid != owner_jid:
+    is_lid_self_chat = (
+        is_from_me
+        and chat_jid.endswith("@lid")
+        and sender_jid == chat_jid
+        and not bool(getattr(source, "IsGroup", False))
+    )
+    is_self_chat = chat_jid == owner_jid or is_lid_self_chat
+    if not is_self_chat:
         return None
+    sender_alt_jid = jid_to_string(getattr(source, "SenderAlt", None))
+    if sender_jid != owner_jid and sender_alt_jid != owner_jid and not is_lid_self_chat:
+        return None
+    sender_jid = owner_jid
 
     message = _unwrap_message(message)
     text: str | None = None
