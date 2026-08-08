@@ -42,6 +42,7 @@ class FakeTransport:
     def __init__(self, media: bytes | None = b"media-bytes") -> None:
         self.sent: list[OutboundMessage] = []
         self.media = media
+        self.voice_audio: list[bytes] = []
 
     def set_message_handler(self, _handler: object) -> None:
         pass
@@ -57,7 +58,15 @@ class FakeTransport:
         return outbound
 
     def send_voice_note(self, chat_jid: str, audio: bytes) -> OutboundMessage:
-        raise AssertionError("unused")
+        self.voice_audio.append(audio)
+        outbound = OutboundMessage(
+            whatsapp_message_id=f"out-{len(self.sent) + 1}",
+            chat_jid=chat_jid,
+            text="[voice note]",
+            occurred_at=datetime.now(timezone.utc),
+        )
+        self.sent.append(outbound)
+        return outbound
 
     def download_media(self, whatsapp_message_id: str) -> bytes | None:
         return self.media
@@ -92,7 +101,11 @@ def media_inbound(
 
 
 def make_worker(
-    tmp_path: Path, provider: FakeMediaProvider, transport: FakeTransport, web_fetcher=None
+    tmp_path: Path,
+    provider: FakeMediaProvider,
+    transport: FakeTransport,
+    web_fetcher=None,
+    tts=None,
 ) -> tuple[MessageWorker, Database]:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     Base.metadata.create_all(database.engine)
@@ -105,6 +118,7 @@ def make_worker(
         "Asia/Kolkata",
         media_dir=tmp_path / "media",
         max_media_bytes=2048,
+        tts=tts,
         web_fetcher=web_fetcher,
     )
     return worker, database
@@ -129,6 +143,29 @@ def test_voice_note_is_transcribed_and_stored_with_provenance(tmp_path: Path) ->
         assert message.media_path is not None
         assert Path(message.media_path).read_bytes() == b"media-bytes"
     assert transport.sent[-1].text.endswith("Samajh gaya.")
+
+
+def test_voice_note_gets_a_voice_reply_without_a_saved_preference(tmp_path: Path) -> None:
+    decision = AssistantDecision(
+        intent="answer_question",
+        response="Sun raha hoon.",
+        transcript="Dudu",
+    )
+    provider = FakeMediaProvider(decision)
+    transport = FakeTransport()
+
+    class FakeTTS:
+        def synthesize(self, text: str, language: str | None = None) -> bytes:
+            assert text == "Sun raha hoon."
+            assert language is None
+            return b"ogg-opus"
+
+    worker, _database = make_worker(tmp_path, provider, transport, tts=FakeTTS())
+
+    worker.process(media_inbound(MessageType.AUDIO, "audio/ogg; codecs=opus"))
+
+    assert transport.voice_audio == [b"ogg-opus"]
+    assert transport.sent[-1].text == "[voice note]"
 
 
 def test_document_is_summarized_and_stored_with_source_reference(tmp_path: Path) -> None:

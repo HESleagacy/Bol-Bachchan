@@ -106,7 +106,13 @@ class MessageWorker:
                 response_text = FALLBACK_ERROR_TEXT
             if response_text is None:
                 return True
-            self._reply(repository, user, inbound.chat_jid, response_text)
+            self._reply(
+                repository,
+                user,
+                inbound.chat_jid,
+                response_text,
+                prefer_voice=inbound.message_type == MessageType.AUDIO,
+            )
             return True
 
     def _handle(
@@ -224,10 +230,17 @@ class MessageWorker:
         )
         return result.execution.response
 
-    def _reply(self, repository: Repository, user: User, chat_jid: str, text: str) -> None:
+    def _reply(
+        self,
+        repository: Repository,
+        user: User,
+        chat_jid: str,
+        text: str,
+        prefer_voice: bool = False,
+    ) -> None:
         formatted = format_assistant_response(text)
         preferences = repository.get_preferences(user.id)
-        if preferences.get("response_modality") == "voice" and self._tts is not None:
+        if (prefer_voice or preferences.get("response_modality") == "voice") and self._tts is not None:
             audio = self._tts.synthesize(text, preferences.get("preferred_language"))
             if audio is not None:
                 try:
