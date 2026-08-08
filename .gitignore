@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Runtime data and Neonize session
+data/*
+!data/.gitkeep
+neonize.db
+
+# Environment
+.env
+
+.pytest_cache/
+.mypy_cache/
