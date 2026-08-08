@@ -16,12 +16,24 @@ log = logging.getLogger(__name__)
 
 PREFERENCE_KEY = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 DIRECT_ACTIONS = {"store_memory", "update_preference"}
-CONFIRM_ACTIONS = {"create_reminder", "create_timeline_event", "cancel_reminder", "forget_memory"}
+CONFIRM_ACTIONS = {
+    "create_reminder",
+    "create_timeline_event",
+    "cancel_reminder",
+    "reschedule_reminder",
+    "forget_memory",
+}
 DEFAULT_EVENT_MINUTES = 60
 
 
 class CalendarSync(Protocol):
-    def create_event(self, title: str, starts_at: datetime, ends_at: datetime, timezone_name: str) -> None: ...
+    def create_event(self, title: str, starts_at: datetime, ends_at: datetime, timezone_name: str) -> str: ...
+
+    def update_event(
+        self, event_id: str, title: str, starts_at: datetime, ends_at: datetime, timezone_name: str
+    ) -> None: ...
+
+    def delete_event(self, event_id: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +84,7 @@ class DecisionEngine:
         deferred = [a for a in decision.proposed_actions if a.action_type in CONFIRM_ACTIONS]
 
         try:
-            conflict_note = self._validate_deferred(deferred, repository, user)
+            deferred, conflict_response = self._prepare_deferred(deferred, repository, user)
         except ValidationFailure as failure:
             repository.resolve_pending_action(pending)
             return ExecutionResult(failure.user_message, 0)
@@ -91,7 +103,7 @@ class DecisionEngine:
                 },
                 ttl_minutes=self._pending_action_ttl_minutes,
             )
-            return ExecutionResult(decision.response + conflict_note, executed)
+            return ExecutionResult(conflict_response or decision.response, executed)
 
         return ExecutionResult(decision.response, executed)
 
@@ -104,20 +116,24 @@ class DecisionEngine:
         pending: PendingAction | None,
     ) -> ExecutionResult:
         if pending is None or pending.payload.get("stage") != "confirm":
-            return ExecutionResult(decision.response, 0)
+            return ExecutionResult(
+                "Action abhi poori tarah samajh nahi aayi. Date aur time dobara batayein.",
+                0,
+            )
         actions = [
             ProposedAction.model_validate(raw)
             for raw in pending.payload.get("proposed_actions", [])
         ]
         try:
-            self._validate_deferred(actions, repository, user)
+            actions, _conflict_response = self._prepare_deferred(actions, repository, user)
         except ValidationFailure as failure:
             repository.resolve_pending_action(pending)
             return ExecutionResult(failure.user_message, 0)
 
         executed = 0
+        action_source = repository.session.get(Message, pending.source_message_id) or source_message
         for action in actions:
-            executed += self._execute_confirmed_action(action, repository, user, source_message)
+            executed += self._execute_confirmed_action(action, repository, user, action_source)
         repository.resolve_pending_action(pending)
         return ExecutionResult(decision.response, executed)
 
@@ -147,6 +163,11 @@ class DecisionEngine:
                 if not PREFERENCE_KEY.fullmatch(key) or action.value is None:
                     raise ValueError(f"Invalid preference key: {key!r}")
                 repository.set_preference(user.id, source_message.id, key, action.value)
+                preferences = repository.get_preferences(user.id)
+                if key == "quiet_hours_start" and "quiet_hours_end" not in preferences:
+                    repository.set_preference(user.id, source_message.id, "quiet_hours_end", "07:00")
+                elif key == "quiet_hours_end" and "quiet_hours_start" not in preferences:
+                    repository.set_preference(user.id, source_message.id, "quiet_hours_start", "22:00")
                 executed += 1
         return executed
 
@@ -159,30 +180,67 @@ class DecisionEngine:
     ) -> int:
         if action.action_type == "create_reminder":
             due_at = parse_user_datetime(action.scheduled_at or "", user.timezone)
-            repository.add_reminder(
+            reminder = repository.add_reminder(
                 user_id=user.id,
                 source_message_id=source_message.id,
                 title=action.title or "",
                 due_at=due_at,
                 timezone_name=user.timezone,
+                recurrence_frequency=action.recurrence_frequency,
+                recurrence_interval=action.recurrence_interval,
+                category=action.category,
             )
-            self._sync_calendar(action.title or "", due_at, due_at + timedelta(minutes=DEFAULT_EVENT_MINUTES), user.timezone)
+            reminder.calendar_event_id = self._sync_calendar(
+                action.title or "",
+                due_at,
+                due_at + timedelta(minutes=DEFAULT_EVENT_MINUTES),
+                user.timezone,
+            )
             return 1
         if action.action_type == "create_timeline_event":
             starts_at = parse_user_datetime(action.starts_at or "", user.timezone)
             ends_at = parse_user_datetime(action.ends_at or "", user.timezone)
-            repository.add_timeline_event(
+            event = repository.add_timeline_event(
                 user_id=user.id,
                 source_message_id=source_message.id,
                 title=action.title or "",
                 starts_at=starts_at,
                 ends_at=ends_at,
+                category=action.event_category,
             )
-            self._sync_calendar(action.title or "", starts_at, ends_at, user.timezone)
+            self._create_category_reminder(action, repository, user, source_message, starts_at)
+            event.calendar_event_id = self._sync_calendar(
+                action.title or "", starts_at, ends_at, user.timezone
+            )
             return 1
         if action.action_type == "cancel_reminder":
-            if action.reminder_id is None or not repository.cancel_reminder(user.id, action.reminder_id):
+            reminder = (
+                repository.get_reminder(user.id, action.reminder_id)
+                if action.reminder_id is not None
+                else None
+            )
+            if reminder is None or not repository.cancel_reminder(user.id, action.reminder_id):
                 raise ValidationFailure("Yeh reminder ab pending nahi hai, isliye cancel nahi ho paya.")
+            if reminder.calendar_event_id:
+                self._delete_calendar_event(reminder.calendar_event_id)
+            return 1
+        if action.action_type == "reschedule_reminder":
+            due_at = parse_user_datetime(action.scheduled_at or "", user.timezone)
+            reminder = (
+                repository.get_reminder(user.id, action.reminder_id)
+                if action.reminder_id is not None
+                else None
+            )
+            if reminder is None or not repository.reschedule_reminder(user.id, action.reminder_id, due_at):
+                raise ValidationFailure("Yeh reminder pending nahi mila, isliye reschedule nahi hua.")
+            if reminder.calendar_event_id:
+                self._update_calendar_event(
+                    reminder.calendar_event_id,
+                    reminder.title,
+                    due_at,
+                    due_at + timedelta(minutes=DEFAULT_EVENT_MINUTES),
+                    user.timezone,
+                )
             return 1
         if action.action_type == "forget_memory":
             if action.memory_id is None or not repository.forget_memory(user.id, action.memory_id):
@@ -190,13 +248,14 @@ class DecisionEngine:
             return 1
         return 0
 
-    def _validate_deferred(
+    def _prepare_deferred(
         self,
         actions: list[ProposedAction],
         repository: Repository,
         user: User,
-    ) -> str:
-        conflict_note = ""
+    ) -> tuple[list[ProposedAction], str | None]:
+        prepared: list[ProposedAction] = []
+        conflict_response: str | None = None
         intervals = [
             Interval(title=event.title, starts_at=as_utc(event.starts_at), ends_at=as_utc(event.ends_at))
             for event in repository.list_upcoming_timeline_events(user.id, limit=50)
@@ -208,7 +267,11 @@ class DecisionEngine:
                 due_at = self._parse_or_fail(action.scheduled_at, user.timezone)
                 if not ensure_future(due_at):
                     raise ValidationFailure("Yeh samay pehle hi guzar chuka hai. Naya samay batayein.")
-                conflict_note += self._conflict_note(find_conflicts(intervals, due_at), user.timezone)
+                conflicts = find_conflicts(intervals, due_at)
+                if conflicts:
+                    conflict = conflicts[0]
+                    action = action.model_copy(update={"scheduled_at": as_utc(conflict.ends_at).isoformat()})
+                    conflict_response = self._conflict_question(conflict, action.title, user.timezone)
             elif action.action_type == "create_timeline_event":
                 if not action.title:
                     raise ValidationFailure("Event ka title samajh nahi aaya, dobara batayein.")
@@ -216,14 +279,32 @@ class DecisionEngine:
                 ends_at = self._parse_or_fail(action.ends_at, user.timezone)
                 if ends_at <= starts_at:
                     raise ValidationFailure("Event ka end time start ke baad hona chahiye.")
-                conflict_note += self._conflict_note(find_conflicts(intervals, starts_at, ends_at), user.timezone)
+                conflicts = find_conflicts(intervals, starts_at, ends_at)
+                if conflicts:
+                    conflict = conflicts[0]
+                    duration = ends_at - starts_at
+                    suggested_start = as_utc(conflict.ends_at)
+                    action = action.model_copy(
+                        update={
+                            "starts_at": suggested_start.isoformat(),
+                            "ends_at": (suggested_start + duration).isoformat(),
+                        }
+                    )
+                    conflict_response = self._conflict_question(conflict, action.title, user.timezone)
             elif action.action_type == "cancel_reminder":
                 if action.reminder_id is None or repository.get_reminder(user.id, action.reminder_id) is None:
                     raise ValidationFailure("Yeh reminder nahi mila. Pehle apne reminders ki list dekh lein.")
+            elif action.action_type == "reschedule_reminder":
+                if action.reminder_id is None or repository.get_reminder(user.id, action.reminder_id) is None:
+                    raise ValidationFailure("Yeh reminder nahi mila. Pehle apne reminders ki list dekh lein.")
+                due_at = self._parse_or_fail(action.scheduled_at, user.timezone)
+                if not ensure_future(due_at):
+                    raise ValidationFailure("Naya samay pehle hi guzar chuka hai. Dobara batayein.")
             elif action.action_type == "forget_memory":
                 if action.memory_id is None or repository.get_memory(user.id, action.memory_id) is None:
                     raise ValidationFailure("Yeh yaad nahi mili. Pehle apni memories ki list dekh lein.")
-        return conflict_note
+            prepared.append(action)
+        return prepared, conflict_response
 
     @staticmethod
     def _parse_or_fail(value: str | None, timezone_name: str) -> datetime:
@@ -233,20 +314,75 @@ class DecisionEngine:
             raise ValidationFailure("Samay samajh nahi aaya. Date aur time dobara batayein.") from exc
 
     @staticmethod
-    def _conflict_note(conflicts: list[Interval], timezone_name: str) -> str:
-        if not conflicts:
-            return ""
-        first = conflicts[0]
-        window = f"{format_local(first.starts_at, timezone_name)} - {format_local(first.ends_at, timezone_name)}"
-        return f"\n\nDhyan dein: is samay '{first.title}' ({window}) bhi hai."
+    def _conflict_question(conflict: Interval, title: str | None, timezone_name: str) -> str:
+        end = format_local(conflict.ends_at, timezone_name)
+        return (
+            f"Us samay '{conflict.title}' bhi hai. "
+            f"'{title or 'Naya kaam'}' ko uske baad, {end} par rakh doon?"
+        )
 
-    def _sync_calendar(self, title: str, starts_at: datetime, ends_at: datetime, timezone_name: str) -> None:
+    def _create_category_reminder(
+        self,
+        action: ProposedAction,
+        repository: Repository,
+        user: User,
+        source_message: Message,
+        starts_at: datetime,
+    ) -> None:
+        if not action.event_category:
+            return
+        key = f"{action.event_category}_reminder_minutes"
+        raw_minutes = repository.get_preferences(user.id).get(key)
+        if raw_minutes is None:
+            return
+        try:
+            minutes = int(raw_minutes)
+        except ValueError:
+            log.warning("Ignoring invalid %s preference: %r", key, raw_minutes)
+            return
+        due_at = starts_at - timedelta(minutes=minutes)
+        if ensure_future(due_at):
+            repository.add_reminder(
+                user_id=user.id,
+                source_message_id=source_message.id,
+                title=f"Upcoming: {action.title}",
+                due_at=due_at,
+                timezone_name=user.timezone,
+            )
+
+    def _sync_calendar(
+        self, title: str, starts_at: datetime, ends_at: datetime, timezone_name: str
+    ) -> str | None:
+        if self._calendar is None:
+            return None
+        try:
+            return self._calendar.create_event(title, starts_at, ends_at, timezone_name)
+        except Exception:
+            log.exception("Calendar sync failed for %r; continuing without it", title)
+            return None
+
+    def _update_calendar_event(
+        self,
+        event_id: str,
+        title: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        timezone_name: str,
+    ) -> None:
         if self._calendar is None:
             return
         try:
-            self._calendar.create_event(title, starts_at, ends_at, timezone_name)
+            self._calendar.update_event(event_id, title, starts_at, ends_at, timezone_name)
         except Exception:
-            log.exception("Calendar sync failed for %r; continuing without it", title)
+            log.exception("Calendar update failed for event %s", event_id)
+
+    def _delete_calendar_event(self, event_id: str) -> None:
+        if self._calendar is None:
+            return
+        try:
+            self._calendar.delete_event(event_id)
+        except Exception:
+            log.exception("Calendar deletion failed for event %s", event_id)
 
 
 def utc_now() -> datetime:

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.domain.messages import InboundMessage, MessageType, OutboundMessage
 from app.domain.preferences import next_allowed_time
 from app.domain.reminders import as_utc
+from app.domain.reminders import parse_natural_interval, parse_natural_schedule
 from app.domain.timeline import Interval, find_conflicts, overlaps
 from app.persistence.database import Database
 from app.persistence.models import Base, Reminder
@@ -48,7 +49,12 @@ class FakeTransport:
         pass
 
 
-def seed_reminder(database: Database, due_at: datetime, preferences: dict[str, str] | None = None) -> int:
+def seed_reminder(
+    database: Database,
+    due_at: datetime,
+    preferences: dict[str, str] | None = None,
+    category: str | None = None,
+) -> int:
     with database.session() as session:
         repository = Repository(session)
         user = repository.get_or_create_user(OWNER, "Asia/Kolkata")
@@ -74,6 +80,7 @@ def seed_reminder(database: Database, due_at: datetime, preferences: dict[str, s
             title="Call Ramesh",
             due_at=due_at,
             timezone_name="Asia/Kolkata",
+            category=category,
         )
         return reminder.id
 
@@ -162,3 +169,66 @@ def test_overlap_rule_matches_project_contract() -> None:
     assert not overlaps(base + timedelta(hours=2), base + timedelta(hours=3), event.starts_at, event.ends_at)
     assert find_conflicts([event], base + timedelta(minutes=30)) == [event]
     assert find_conflicts([event], base + timedelta(hours=2)) == []
+
+
+def test_recurring_reminder_schedules_its_next_occurrence(tmp_path: Path) -> None:
+    worker, database, transport = make_worker(tmp_path)
+    reminder_id = seed_reminder(database, datetime.now(timezone.utc) - timedelta(minutes=1))
+    with database.session() as session:
+        reminder = session.get(Reminder, reminder_id)
+        reminder.recurrence_frequency = "weekly"
+        reminder.recurrence_interval = 1
+
+    assert worker.deliver_due_reminders() == 1
+    assert len(transport.sent) == 1
+    with database.session() as session:
+        reminder = session.get(Reminder, reminder_id)
+        assert reminder.status == "pending"
+        assert as_utc(reminder.due_at) > datetime.now(timezone.utc) + timedelta(days=6)
+
+
+def test_category_quiet_hours_override_general_policy(tmp_path: Path) -> None:
+    worker, database, transport = make_worker(tmp_path)
+    reminder_id = seed_reminder(
+        database,
+        datetime.now(timezone.utc) - timedelta(minutes=1),
+        preferences={
+            "quiet_hours_start": "10:00",
+            "quiet_hours_end": "10:00",
+            "work_quiet_hours_start": "00:00",
+            "work_quiet_hours_end": "23:59",
+        },
+        category="work",
+    )
+
+    assert worker.deliver_due_reminders() == 0
+    assert transport.sent == []
+    with database.session() as session:
+        assert session.get(Reminder, reminder_id).status == "pending"
+
+
+def test_hinglish_weekday_time_parser() -> None:
+    now = datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc)
+    parsed = parse_natural_schedule(
+        "Sunday shaam 6 baje",
+        "Asia/Kolkata",
+        now=now,
+    )
+    local = parsed.astimezone(ZoneInfo("Asia/Kolkata"))
+    assert local.weekday() == 6
+    assert (local.hour, local.minute) == (18, 0)
+
+
+def test_hinglish_timeline_interval_parser() -> None:
+    now = datetime(2026, 8, 8, 9, 0, tzinfo=timezone.utc)
+    parsed = parse_natural_interval(
+        "Kal shaam 4:30 se 5:30 doctor appointment",
+        "Asia/Kolkata",
+        now=now,
+    )
+    assert parsed is not None
+    starts_at, ends_at = parsed
+    local_start = starts_at.astimezone(ZoneInfo("Asia/Kolkata"))
+    local_end = ends_at.astimezone(ZoneInfo("Asia/Kolkata"))
+    assert (local_start.hour, local_start.minute) == (16, 30)
+    assert (local_end.hour, local_end.minute) == (17, 30)

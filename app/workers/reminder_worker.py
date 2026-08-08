@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from calendar import monthrange
+from datetime import datetime, timedelta, timezone
 from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
@@ -89,19 +90,44 @@ class ReminderWorker:
                 reminder.status = "pending"
                 return False
             repository.add_outbound(user, outbound)
-            reminder.status = "delivered"
             reminder.delivered_at = datetime.now(timezone.utc)
+            if reminder.recurrence_frequency:
+                reminder.due_at = self._next_occurrence(reminder)
+                reminder.status = "pending"
+            else:
+                reminder.status = "delivered"
             log.info("Delivered reminder %s: %s", reminder.id, reminder.title)
             return True
+
+    @staticmethod
+    def _next_occurrence(reminder: Reminder) -> datetime:
+        due_at = as_utc(reminder.due_at)
+        interval = max(1, reminder.recurrence_interval or 1)
+        now = datetime.now(timezone.utc)
+        while due_at <= now:
+            if reminder.recurrence_frequency == "daily":
+                due_at += timedelta(days=interval)
+            elif reminder.recurrence_frequency == "weekly":
+                due_at += timedelta(weeks=interval)
+            elif reminder.recurrence_frequency == "monthly":
+                month_index = due_at.month - 1 + interval
+                year = due_at.year + month_index // 12
+                month = month_index % 12 + 1
+                day = min(due_at.day, monthrange(year, month)[1])
+                due_at = due_at.replace(year=year, month=month, day=day)
+            else:
+                return due_at
+        return due_at
 
     @staticmethod
     def _quiet_hours_deferral(reminder: Reminder, preferences: dict[str, str]) -> datetime | None:
         timezone_name = reminder.timezone or "UTC"
         now_local = datetime.now(timezone.utc).astimezone(ZoneInfo(timezone_name))
+        prefix = f"{reminder.category}_" if reminder.category else ""
         allowed_local = next_allowed_time(
             now_local,
-            preferences.get("quiet_hours_start"),
-            preferences.get("quiet_hours_end"),
+            preferences.get(f"{prefix}quiet_hours_start") or preferences.get("quiet_hours_start"),
+            preferences.get(f"{prefix}quiet_hours_end") or preferences.get("quiet_hours_end"),
         )
         if allowed_local is None:
             return None
