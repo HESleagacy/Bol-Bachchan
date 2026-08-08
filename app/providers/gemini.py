@@ -64,7 +64,7 @@ class GeminiProvider:
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 response_mime_type="application/json",
-                response_schema=AssistantDecision,
+                response_json_schema=AssistantDecision.model_json_schema(),
                 temperature=0.2,
             ),
         )
