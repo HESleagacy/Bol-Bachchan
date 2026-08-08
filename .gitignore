@@ -13,12 +13,15 @@ data/*
 !data/.gitkeep
 neonize.db
 
-# Environment – NEVER commit secrets
+# Environment - never commit secrets
 .env
 
-# IDE / tooling
+# IDE and tooling
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .idea/
 .vscode/
 *.swp
+.coverage
+htmlcov/
