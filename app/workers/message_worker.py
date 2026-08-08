@@ -39,7 +39,7 @@ DOWNLOAD_FAILED_TEXT = "File download nahi ho payi, dobara bhejne ki koshish kar
 
 
 def format_assistant_response(text: str) -> str:
-    return text.strip()
+    return f"*Bol Bachchan*\n{text.strip()}"
 
 
 class MessageWorker:
