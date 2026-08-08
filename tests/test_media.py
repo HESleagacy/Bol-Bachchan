@@ -6,12 +6,14 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.assistant.decision_engine import DecisionEngine
-from app.assistant.schemas import AssistantDecision
+from app.assistant.schemas import AssistantDecision, ProposedAction
 from app.assistant.service import AssistantService
 from app.domain.messages import InboundMessage, MessageType, OutboundMessage
 from app.persistence.database import Database
 from app.persistence.models import Base, Document, Message
+from app.persistence.repositories import Repository
 from app.workers.message_worker import MessageWorker
+from app.providers.web import FetchedPage
 
 OWNER = "919876543210@s.whatsapp.net"
 
@@ -90,7 +92,7 @@ def media_inbound(
 
 
 def make_worker(
-    tmp_path: Path, provider: FakeMediaProvider, transport: FakeTransport
+    tmp_path: Path, provider: FakeMediaProvider, transport: FakeTransport, web_fetcher=None
 ) -> tuple[MessageWorker, Database]:
     database = Database(f"sqlite:///{tmp_path / 'test.db'}")
     Base.metadata.create_all(database.engine)
@@ -103,6 +105,7 @@ def make_worker(
         "Asia/Kolkata",
         media_dir=tmp_path / "media",
         max_media_bytes=2048,
+        web_fetcher=web_fetcher,
     )
     return worker, database
 
@@ -134,6 +137,10 @@ def test_document_is_summarized_and_stored_with_source_reference(tmp_path: Path)
         response="Yeh ek bijli ka bill lag raha hai. Iske saath kya karna hai?",
         document_summary="Electricity bill for July 2026",
         document_extracted_text="Amount due: Rs 2,340. Due date: 15 Aug 2026.",
+        document_type="electricity_bill",
+        document_dates=["2026-08-15"],
+        document_amounts=["INR 2340"],
+        document_entities=["Electricity provider"],
     )
     provider = FakeMediaProvider(decision)
     transport = FakeTransport()
@@ -150,9 +157,12 @@ def test_document_is_summarized_and_stored_with_source_reference(tmp_path: Path)
         assert document.filename == "bill.pdf"
         assert document.summary == "Electricity bill for July 2026"
         assert "2,340" in document.extracted_text
+        assert document.document_type == "electricity_bill"
+        assert document.extracted_dates == ["2026-08-15"]
+        assert document.extracted_amounts == ["INR 2340"]
         source = session.get(Message, document.source_message_id)
         assert source.whatsapp_message_id == "media-1"
-    assert "bijli ka bill" in transport.sent[-1].text
+    assert "Aap iske saath kya karna chahte hain?" in transport.sent[-1].text
 
 
 def test_unsupported_mime_type_is_rejected_without_download(tmp_path: Path) -> None:
@@ -190,3 +200,135 @@ def test_failed_download_reports_error(tmp_path: Path) -> None:
 
     assert provider.audio_calls == []
     assert "download nahi" in transport.sent[-1].text
+
+
+def test_uncaptioned_document_cannot_trigger_embedded_actions(tmp_path: Path) -> None:
+    decision = AssistantDecision(
+        intent="create_reminder",
+        response="Reminder set kar doon?",
+        document_summary="Document asks for a medicine reminder",
+        proposed_actions=[
+            ProposedAction(
+                action_type="create_reminder",
+                title="Take medicine",
+                scheduled_at="2026-08-09T08:00:00+05:30",
+            )
+        ],
+    )
+    provider = FakeMediaProvider(decision)
+    transport = FakeTransport()
+    worker, database = make_worker(tmp_path, provider, transport)
+
+    worker.process(
+        media_inbound(MessageType.DOCUMENT, "application/pdf", filename="instructions.pdf")
+    )
+
+    with database.session() as session:
+        from app.persistence.models import PendingAction, Reminder
+
+        assert session.scalar(select(PendingAction)) is None
+        assert session.scalar(select(Reminder)) is None
+    assert "Aap iske saath kya karna chahte hain?" in transport.sent[-1].text
+
+
+def test_public_link_is_summarized_and_source_linked(tmp_path: Path) -> None:
+    class FakeWebFetcher:
+        def fetch(self, url: str) -> FetchedPage:
+            return FetchedPage(
+                url=url,
+                content=b"Electricity bill amount INR 4820 due 18 August",
+                filename="example.com.txt",
+            )
+
+    provider = FakeMediaProvider(
+        AssistantDecision(
+            intent="document_received",
+            response="Page summarized.",
+            document_summary="Electricity bill",
+            document_type="web_page",
+            document_amounts=["INR 4820"],
+            document_dates=["18 August"],
+        )
+    )
+    transport = FakeTransport()
+    worker, database = make_worker(tmp_path, provider, transport, FakeWebFetcher())
+
+    worker.process(
+        InboundMessage(
+            whatsapp_message_id="link-1",
+            chat_jid=OWNER,
+            sender_jid=OWNER,
+            message_type=MessageType.TEXT,
+            text="https://example.com/bill",
+            occurred_at=datetime.now(timezone.utc),
+            is_from_me=True,
+            is_self_chat=True,
+        )
+    )
+
+    with database.session() as session:
+        document = session.scalar(select(Document))
+        assert document.storage_path == "https://example.com/bill"
+        assert document.extracted_amounts == ["INR 4820"]
+        assert session.get(Message, document.source_message_id).whatsapp_message_id == "link-1"
+    assert "Aap iske saath kya karna chahte hain?" in transport.sent[-1].text
+
+
+def test_document_due_date_followup_creates_confirmable_reminder(tmp_path: Path) -> None:
+    provider = FakeMediaProvider(
+        AssistantDecision(intent="answer_question", response="unused")
+    )
+    transport = FakeTransport()
+    worker, database = make_worker(tmp_path, provider, transport)
+    with database.session() as session:
+        repository = Repository(session)
+        user = repository.get_or_create_user(OWNER, "Asia/Kolkata")
+        source = repository.add_inbound(
+            user,
+            InboundMessage(
+                whatsapp_message_id="bill-source",
+                chat_jid=OWNER,
+                sender_jid=OWNER,
+                message_type=MessageType.DOCUMENT,
+                text=None,
+                occurred_at=datetime.now(timezone.utc),
+                is_from_me=True,
+                is_self_chat=True,
+            ),
+        )
+        repository.add_document(
+            user.id,
+            source.id,
+            "bill.pdf",
+            "application/pdf",
+            "data/media/bill.pdf",
+            "Electricity bill",
+            "Due 2026-09-18",
+            document_type="electricity_bill",
+            extracted_dates=["2026-09-18"],
+            extracted_amounts=["INR 4820"],
+        )
+
+    # Replace the media-only fake with an object whose text method must not be used.
+    provider.interpret = lambda *_args: (_ for _ in ()).throw(AssertionError("Gemini called"))
+    worker.process(
+        InboundMessage(
+            whatsapp_message_id="bill-followup",
+            chat_jid=OWNER,
+            sender_jid=OWNER,
+            message_type=MessageType.TEXT,
+            text="Haan, do din pehle yaad dila dena",
+            occurred_at=datetime.now(timezone.utc),
+            is_from_me=True,
+            is_self_chat=True,
+        )
+    )
+
+    with database.session() as session:
+        from app.persistence.models import PendingAction
+
+        pending = session.scalar(select(PendingAction).where(PendingAction.status == "pending"))
+        action = pending.payload["proposed_actions"][0]
+        due_at = datetime.fromisoformat(action["scheduled_at"])
+        assert due_at.date().isoformat() == "2026-09-16"
+        assert action["category"] == "bill"

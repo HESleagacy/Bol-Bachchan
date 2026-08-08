@@ -160,3 +160,72 @@ def test_clarification_context_is_persisted_then_resolved(tmp_path: Path) -> Non
     with database.session() as session:
         pending = session.scalar(select(PendingAction))
         assert pending is not None and pending.status == "resolved"
+
+
+def test_quiet_hours_start_adds_a_safe_default_end(tmp_path: Path) -> None:
+    provider = FakeProvider(
+        [
+            AssistantDecision(
+                intent="update_preference",
+                response="Raat ko reminders nahi bhejunga.",
+                proposed_actions=[
+                    ProposedAction(
+                        action_type="update_preference",
+                        key="quiet_hours_start",
+                        value="22:00",
+                    )
+                ],
+            )
+        ]
+    )
+    worker, database, _transport = make_worker(tmp_path, provider)
+
+    worker.process(inbound("quiet-hours", "Raat 10 ke baad reminders mat bhejna"))
+
+    with database.session() as session:
+        preferences = {
+            item.key: item.value for item in session.scalars(select(Preference)).all()
+        }
+        assert preferences == {"quiet_hours_start": "22:00", "quiet_hours_end": "07:00"}
+
+
+def test_canonical_quiet_hours_does_not_depend_on_gemini(tmp_path: Path) -> None:
+    provider = FakeProvider([])
+    worker, database, _transport = make_worker(tmp_path, provider)
+
+    worker.process(inbound("quiet-canonical", "Raat 10 baje ke baad reminders mat bhejna"))
+
+    with database.session() as session:
+        preferences = {item.key: item.value for item in session.scalars(select(Preference)).all()}
+        assert preferences["quiet_hours_start"] == "22:00"
+        assert preferences["quiet_hours_end"] == "07:00"
+
+
+def test_routine_statement_is_stored_without_scheduling(tmp_path: Path) -> None:
+    provider = FakeProvider([])
+    worker, database, _transport = make_worker(tmp_path, provider)
+
+    worker.process(inbound("routine", "Main usually Sunday ko medicines order karta hoon"))
+
+    with database.session() as session:
+        memory = session.scalar(select(Memory))
+        assert memory.kind == "routine"
+        assert "Sunday" in memory.content
+        from app.persistence.models import Reminder
+
+        assert session.scalar(select(Reminder)) is None
+
+
+def test_medical_advance_preference_is_deterministic(tmp_path: Path) -> None:
+    provider = FakeProvider([])
+    worker, database, _transport = make_worker(tmp_path, provider)
+
+    worker.process(
+        inbound("medical-pref", "Doctor appointments ke liye ek din pehle bhi remind karna")
+    )
+
+    with database.session() as session:
+        preference = session.scalar(
+            select(Preference).where(Preference.key == "medical_appointment_reminder_minutes")
+        )
+        assert preference.value == "1440"

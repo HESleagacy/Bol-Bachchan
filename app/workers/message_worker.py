@@ -5,12 +5,15 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Thread
 
+import httpx
+
 from app.assistant.service import AssistantService, MediaResult
 from app.domain.messages import InboundMessage, MessageType
 from app.persistence.database import Database
 from app.persistence.models import Message, User
 from app.persistence.repositories import Repository
 from app.providers.maya import TTSProvider
+from app.providers.web import SafeWebFetcher, first_url
 from app.transport.base import MessageTransport
 
 log = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ class MessageWorker:
         media_dir: Path = Path("data/media"),
         max_media_bytes: int = 20 * 1024 * 1024,
         tts: TTSProvider | None = None,
+        web_fetcher: SafeWebFetcher | None = None,
         queue_size: int = 100,
     ) -> None:
         self._database = database
@@ -63,6 +67,7 @@ class MessageWorker:
         self._media_dir = media_dir
         self._max_media_bytes = max_media_bytes
         self._tts = tts
+        self._web_fetcher = web_fetcher
         self._queue: Queue[InboundMessage] = Queue(maxsize=queue_size)
         self._stopping = Event()
         self._thread = Thread(target=self._run, name="message-worker", daemon=True)
@@ -112,6 +117,9 @@ class MessageWorker:
         source_message: Message,
     ) -> str | None:
         if inbound.message_type == MessageType.TEXT and inbound.text:
+            url = first_url(inbound.text)
+            if url and self._web_fetcher is not None:
+                return self._handle_link(url, inbound, repository, user, source_message)
             return self._assistant.handle_text(inbound.text, repository, user, source_message).response
         if inbound.message_type == MessageType.AUDIO:
             return self._handle_audio(inbound, repository, user, source_message)
@@ -138,6 +146,44 @@ class MessageWorker:
         result = self._assistant.handle_audio(audio, mime_type, repository, user, source_message)
         if result.transcript:
             source_message.transcript = result.transcript
+        source_message.detected_languages = result.detected_languages
+        return result.execution.response
+
+    def _handle_link(
+        self,
+        url: str,
+        inbound: InboundMessage,
+        repository: Repository,
+        user: User,
+        source_message: Message,
+    ) -> str:
+        try:
+            page = self._web_fetcher.fetch(url)
+        except (ValueError, httpx.HTTPError, OSError) as exc:
+            log.warning("Link fetch rejected for %s: %s", url, exc)
+            return "Yeh link safely open nahi ho paya. Public text ya HTML link dobara bhejein."
+        result = self._assistant.handle_document(
+            page.content,
+            "text/plain",
+            page.filename,
+            None,
+            repository,
+            user,
+            source_message,
+        )
+        repository.add_document(
+            user_id=user.id,
+            source_message_id=source_message.id,
+            filename=page.filename,
+            mime_type="text/html",
+            storage_path=page.url,
+            summary=result.document_summary,
+            extracted_text=result.document_extracted_text,
+            document_type=result.document_type or "web_page",
+            extracted_dates=result.document_dates,
+            extracted_amounts=result.document_amounts,
+            extracted_entities=result.document_entities,
+        )
         return result.execution.response
 
     def _handle_document(
@@ -171,6 +217,10 @@ class MessageWorker:
             storage_path=storage_path,
             summary=result.document_summary,
             extracted_text=result.document_extracted_text,
+            document_type=result.document_type,
+            extracted_dates=result.document_dates,
+            extracted_amounts=result.document_amounts,
+            extracted_entities=result.document_entities,
         )
         return result.execution.response
 
@@ -178,7 +228,7 @@ class MessageWorker:
         formatted = format_assistant_response(text)
         preferences = repository.get_preferences(user.id)
         if preferences.get("response_modality") == "voice" and self._tts is not None:
-            audio = self._tts.synthesize(text)
+            audio = self._tts.synthesize(text, preferences.get("preferred_language"))
             if audio is not None:
                 try:
                     outbound = self._transport.send_voice_note(chat_jid, audio)
