@@ -19,7 +19,7 @@ RUN mkdir -p /app/data \
     && chown -R botuser:botuser /app
 USER botuser
 
-# Health-check port for container orchestrators (Fly.io sets PORT=8080).
+# Health-check port for container orchestrators (Railway / Fly.io set PORT).
 ENV PORT=8080
 EXPOSE 8080
 

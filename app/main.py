@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Minimal health-check HTTP server (for Fly.io / any container orchestrator)
+# Minimal health-check HTTP server (for Railway / any container orchestrator)
 # ---------------------------------------------------------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -46,8 +46,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
 def _start_health_server() -> None:
     """Start a background HTTP health-check server if PORT env var is set.
 
-    Fly.io sets PORT automatically. Locally this is a no-op unless you
-    explicitly export PORT.
+    Railway (and most PaaS platforms) set PORT automatically.
+    Locally this is a no-op unless you explicitly export PORT.
     """
     port_str = os.environ.get("PORT")
     if not port_str:
