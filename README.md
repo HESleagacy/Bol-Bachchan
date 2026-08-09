@@ -188,4 +188,4 @@ tests/                 # pytest test suite
 
 ## License
 
-Private project.
+GNU General License
